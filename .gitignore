@@ -1,0 +1,17 @@
+# Virtual environment
+.venv/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Test artifacts
+.pytest_cache/
+
+# Local environment variables and secrets
+.env
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
