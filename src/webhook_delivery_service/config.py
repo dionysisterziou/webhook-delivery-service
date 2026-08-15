@@ -1,5 +1,6 @@
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import URL
 
 
 class Settings(BaseSettings):
@@ -16,3 +17,13 @@ class Settings(BaseSettings):
     rabbitmq_default_vhost: str
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def build_database_url(self) -> URL:
+        return URL.create(
+            drivername="postgresql+psycopg",
+            username=self.postgres_user,
+            password=self.postgres_password.get_secret_value(),
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
+        )
