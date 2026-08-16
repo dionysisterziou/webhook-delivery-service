@@ -1,7 +1,19 @@
-from fastapi import FastAPI, HTTPException, status
-from sqlalchemy.exc import SQLAlchemyError
+from typing import Annotated
 
-from webhook_delivery_service.database import check_database_connection
+from fastapi import Depends, FastAPI, HTTPException, status
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from webhook_delivery_service.database import (
+    check_database_connection,
+    get_database_session,
+)
+from webhook_delivery_service.models import WebhookDelivery
+from webhook_delivery_service.schemas import (
+    WebhookDeliveryCreate,
+    WebhookDeliveryResponse,
+)
+from webhook_delivery_service.services import create_webhook_delivery
 
 app = FastAPI(title="Webhook Delivery Service")
 
@@ -25,3 +37,18 @@ async def readiness() -> dict[str, str]:
         )
 
     return {"status": "ok", "database": "ok"}
+
+
+@app.post(
+    "/deliveries",
+    response_model=WebhookDeliveryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_delivery(
+    delivery_data: WebhookDeliveryCreate,
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> WebhookDelivery:
+    return await create_webhook_delivery(
+        session=session,
+        delivery_data=delivery_data,
+    )
