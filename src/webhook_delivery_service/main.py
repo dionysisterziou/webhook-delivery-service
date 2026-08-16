@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,7 +14,10 @@ from webhook_delivery_service.schemas import (
     WebhookDeliveryCreate,
     WebhookDeliveryResponse,
 )
-from webhook_delivery_service.services import create_webhook_delivery
+from webhook_delivery_service.services import (
+    create_webhook_delivery,
+    get_webhook_delivery,
+)
 
 app = FastAPI(title="Webhook Delivery Service")
 
@@ -52,3 +56,25 @@ async def create_delivery(
         session=session,
         delivery_data=delivery_data,
     )
+
+
+@app.get(
+    "/deliveries/{delivery_id}",
+    response_model=WebhookDeliveryResponse,
+)
+async def get_delivery(
+    delivery_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> WebhookDelivery:
+    delivery = await get_webhook_delivery(
+        session=session,
+        delivery_id=delivery_id,
+    )
+
+    if delivery is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Webhook delivery not found",
+        )
+
+    return delivery

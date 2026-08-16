@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from webhook_delivery_service.models import WebhookDelivery
@@ -19,3 +21,10 @@ async def create_webhook_delivery(
     await session.refresh(delivery)
 
     return delivery
+
+
+async def get_webhook_delivery(
+    session: AsyncSession,
+    delivery_id: UUID,
+) -> WebhookDelivery | None:
+    return await session.get(WebhookDelivery, delivery_id)
