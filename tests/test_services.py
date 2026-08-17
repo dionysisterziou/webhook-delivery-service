@@ -4,7 +4,10 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from webhook_delivery_service.models import WebhookDelivery
+from webhook_delivery_service.models import (
+    OutboxMessage,
+    WebhookDelivery,
+)
 from webhook_delivery_service.schemas import WebhookDeliveryCreate
 from webhook_delivery_service.services import (
     create_webhook_delivery,
@@ -12,8 +15,9 @@ from webhook_delivery_service.services import (
 )
 
 
-def test_create_webhook_delivery_adds_and_commits_delivery() -> None:
+def test_create_webhook_delivery_adds_delivery_and_outbox_message() -> None:
     session = MagicMock(spec=AsyncSession)
+    session.flush = AsyncMock()
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
 
@@ -30,11 +34,27 @@ def test_create_webhook_delivery_adds_and_commits_delivery() -> None:
         )
     )
 
+    assert delivery.id is not None
     assert delivery.target_url == "https://example.com/webhooks"
     assert delivery.event_type == "order.created"
     assert delivery.payload == {"order_id": 123}
 
-    session.add.assert_called_once_with(delivery)
+    assert session.add.call_count == 2
+
+    added_delivery = session.add.call_args_list[0].args[0]
+    added_outbox_message = session.add.call_args_list[1].args[0]
+
+    assert added_delivery is delivery
+    assert isinstance(added_delivery, WebhookDelivery)
+    assert isinstance(added_outbox_message, OutboxMessage)
+
+    assert added_outbox_message.delivery_id == delivery.id
+    assert added_outbox_message.message_type == "webhook.delivery.requested"
+    assert added_outbox_message.payload == {
+        "delivery_id": str(delivery.id),
+    }
+
+    session.flush.assert_awaited_once_with()
     session.commit.assert_awaited_once_with()
     session.refresh.assert_awaited_once_with(delivery)
 

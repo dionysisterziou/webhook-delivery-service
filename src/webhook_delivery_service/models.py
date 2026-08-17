@@ -1,9 +1,11 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Integer,
     MetaData,
     String,
@@ -74,4 +76,34 @@ class WebhookDelivery(Base):
     )
     delivered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+    )
+
+
+class OutboxMessage(Base):
+    __tablename__ = "outbox_messages"
+
+    id: Mapped[UUID] = mapped_column(
+        primary_key=True,
+        default=uuid4,
+    )
+    delivery_id: Mapped[UUID] = mapped_column(
+        ForeignKey("webhook_deliveries.id"),
+        nullable=False,
+    )
+    message_type: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
