@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     rabbitmq_default_user: str
     rabbitmq_default_pass: SecretStr
     rabbitmq_default_vhost: str
+    rabbitmq_delivery_queue: str = "webhook.deliveries"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -16,6 +16,7 @@ dependencies = [
     "sqlalchemy[asyncio]",
     "uvicorn[standard]",
     "alembic",
+    "aio-pika>=10,<11",
 ]
 
 [project.optional-dependencies]
@@ -42,9 +43,7 @@ script_location = "%(here)s/migrations"
 # file_template = "%%(year)d/%%(month).2d/%%(day).2d_%%(hour).2d%%(minute).2d_%%(second).2d_%%(rev)s_%%(slug)s"
 
 # additional paths to be prepended to sys.path. defaults to the current working directory.
-prepend_sys_path = [
-    "."
-]
+prepend_sys_path = ["."]
 
 # timezone to use when rendering the date within the migration file
 # as well as the filename.
@@ -108,4 +107,3 @@ prepend_sys_path = [
 # type = "exec"
 # executable = "ruff"
 # options = "check --fix REVISION_SCRIPT_FILENAME"
-
