@@ -22,7 +22,7 @@ class RabbitMQOutboxPublisher:
     async def connect(
         cls,
         settings: Settings,
-    ) -> "RabbitMQOutboxPublisher":
+    ) -> RabbitMQOutboxPublisher:
         connection = await connect_robust(
             host=settings.rabbitmq_host,
             port=settings.rabbitmq_port,
