@@ -17,6 +17,7 @@ dependencies = [
     "uvicorn[standard]",
     "alembic",
     "aio-pika>=10,<11",
+    "httpx>=0.28,<1",
 ]
 
 [project.optional-dependencies]
