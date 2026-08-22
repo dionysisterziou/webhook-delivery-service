@@ -3,12 +3,17 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from aio_pika.abc import AbstractIncomingMessage
+from aio_pika.abc import (
+    AbstractIncomingMessage,
+    AbstractQueue,
+    AbstractRobustConnection,
+)
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from webhook_delivery_service.models import WebhookDelivery
 from webhook_delivery_service.rabbitmq_consumer import (
+    RabbitMQDeliveryConsumer,
     consume_rabbitmq_delivery_message,
 )
 
@@ -150,3 +155,71 @@ async def run_consume_rabbitmq_delivery_message_temporary_error() -> None:
 
 def test_consume_rabbitmq_delivery_message_requeues_temporary_error() -> None:
     asyncio.run(run_consume_rabbitmq_delivery_message_temporary_error())
+
+
+async def run_rabbitmq_delivery_consumer_get_message() -> None:
+    connection = MagicMock(spec=AbstractRobustConnection)
+
+    message = MagicMock(spec=AbstractIncomingMessage)
+
+    queue = MagicMock(spec=AbstractQueue)
+    queue.get = AsyncMock(return_value=message)
+
+    consumer = RabbitMQDeliveryConsumer(
+        connection=connection,
+        queue=queue,
+    )
+
+    received_message = await consumer.get_message()
+
+    assert received_message is message
+    queue.get.assert_awaited_once_with(
+        no_ack=False,
+        fail=False,
+    )
+
+
+def test_rabbitmq_delivery_consumer_gets_one_message() -> None:
+    asyncio.run(run_rabbitmq_delivery_consumer_get_message())
+
+
+async def run_rabbitmq_delivery_consumer_empty_queue() -> None:
+    connection = MagicMock(spec=AbstractRobustConnection)
+    queue = MagicMock(spec=AbstractQueue)
+    queue.get = AsyncMock(return_value=None)
+
+    consumer = RabbitMQDeliveryConsumer(
+        connection=connection,
+        queue=queue,
+    )
+
+    received_message = await consumer.get_message()
+
+    assert received_message is None
+    queue.get.assert_awaited_once_with(
+        no_ack=False,
+        fail=False,
+    )
+
+
+def test_rabbitmq_delivery_consumer_returns_none_when_queue_is_empty() -> None:
+    asyncio.run(run_rabbitmq_delivery_consumer_empty_queue())
+
+
+async def run_rabbitmq_delivery_consumer_close() -> None:
+    connection = MagicMock(spec=AbstractRobustConnection)
+    connection.close = AsyncMock()
+    queue = MagicMock(spec=AbstractQueue)
+
+    consumer = RabbitMQDeliveryConsumer(
+        connection=connection,
+        queue=queue,
+    )
+
+    await consumer.close()
+
+    connection.close.assert_awaited_once_with()
+
+
+def test_rabbitmq_delivery_consumer_closes_connection() -> None:
+    asyncio.run(run_rabbitmq_delivery_consumer_close())
