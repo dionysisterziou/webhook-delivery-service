@@ -24,10 +24,13 @@ async def serve_api() -> None:
 def main() -> None:
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
 
-    asyncio.run(
-        serve_api(),
-        loop_factory=loop_factory,
-    )
+    try:
+        asyncio.run(
+            serve_api(),
+            loop_factory=loop_factory,
+        )
+    except KeyboardInterrupt:
+        print("API stopped.")
 
 
 if __name__ == "__main__":

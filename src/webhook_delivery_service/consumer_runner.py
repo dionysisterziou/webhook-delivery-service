@@ -12,27 +12,22 @@ from webhook_delivery_service.rabbitmq_consumer import (
 )
 
 
-async def run_consumer_once() -> int:
+async def run_consumer() -> None:
     settings = Settings()
     consumer = await RabbitMQDeliveryConsumer.connect(settings)
 
     try:
-        message = await consumer.get_message()
-
-        if message is None:
-            return 0
-
         async with httpx.AsyncClient() as client:
             sender = HttpxWebhookSender(client)
 
-            async with async_session_factory() as session:
-                await consume_rabbitmq_delivery_message(
-                    message=message,
-                    session=session,
-                    sender=sender,
-                )
-
-        return 1
+            async with consumer.iter_messages() as messages:
+                async for message in messages:
+                    async with async_session_factory() as session:
+                        await consume_rabbitmq_delivery_message(
+                            message=message,
+                            session=session,
+                            sender=sender,
+                        )
     finally:
         await consumer.close()
         await engine.dispose()
@@ -41,12 +36,13 @@ async def run_consumer_once() -> int:
 def main() -> None:
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
 
-    processed_count = asyncio.run(
-        run_consumer_once(),
-        loop_factory=loop_factory,
-    )
-
-    print(f"Processed {processed_count} RabbitMQ message(s).")
+    try:
+        asyncio.run(
+            run_consumer(),
+            loop_factory=loop_factory,
+        )
+    except KeyboardInterrupt:
+        print("Consumer stopped.")
 
 
 if __name__ == "__main__":
