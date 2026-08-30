@@ -6,6 +6,7 @@ from uuid import uuid4
 from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractQueue,
+    AbstractQueueIterator,
     AbstractRobustConnection,
 )
 from sqlalchemy.exc import SQLAlchemyError
@@ -223,3 +224,20 @@ async def run_rabbitmq_delivery_consumer_close() -> None:
 
 def test_rabbitmq_delivery_consumer_closes_connection() -> None:
     asyncio.run(run_rabbitmq_delivery_consumer_close())
+
+
+def test_rabbitmq_delivery_consumer_returns_message_iterator() -> None:
+    connection = MagicMock(spec=AbstractRobustConnection)
+    queue = MagicMock(spec=AbstractQueue)
+    queue_iterator = MagicMock(spec=AbstractQueueIterator)
+    queue.iterator = MagicMock(return_value=queue_iterator)
+
+    consumer = RabbitMQDeliveryConsumer(
+        connection=connection,
+        queue=queue,
+    )
+
+    returned_iterator = consumer.iter_messages()
+
+    assert returned_iterator is queue_iterator
+    queue.iterator.assert_called_once_with()

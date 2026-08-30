@@ -27,10 +27,11 @@ The delivery flow is:
 3. A `WebhookDelivery` and an `OutboxMessage` are stored in the same PostgreSQL transaction.
 4. The dispatcher reads unpublished outbox messages.
 5. The dispatcher publishes a persistent `webhook.delivery.requested` message to RabbitMQ.
-6. The consumer receives the message and loads the delivery from PostgreSQL.
+6. The long-running consumer receives the message and loads the delivery from PostgreSQL.
 7. The worker sends the webhook through HTTPX.
 8. The delivery is updated as `succeeded`, `retry_scheduled`, or `failed`.
 9. Successfully handled RabbitMQ messages are acknowledged.
+10. The consumer continues waiting for additional messages.
 
 ## Reliability Design
 
@@ -52,29 +53,29 @@ The worker therefore includes terminal-state guards to avoid processing deliveri
 
 Failed HTTP attempts are handled using:
 
-* capped exponential backoff,
-* jitter,
-* a maximum number of attempts,
-* `next_attempt_at`,
-* `last_error`,
-* terminal `failed` status.
+- capped exponential backoff,
+- jitter,
+- a maximum number of attempts,
+- `next_attempt_at`,
+- `last_error`,
+- terminal `failed` status.
 
 Automatic scheduling and execution of due retries is not implemented yet.
 
 ## Technology Stack
 
-* Python 3.14
-* FastAPI
-* Pydantic
-* PostgreSQL
-* SQLAlchemy ORM
-* Psycopg
-* Alembic
-* RabbitMQ
-* aio-pika
-* HTTPX
-* Docker Compose
-* pytest
+- Python 3.14
+- FastAPI
+- Pydantic
+- PostgreSQL
+- SQLAlchemy ORM
+- Psycopg
+- Alembic
+- RabbitMQ
+- aio-pika
+- HTTPX
+- Docker Compose
+- pytest
 
 ## API Endpoints
 
@@ -136,10 +137,10 @@ Returns the current delivery state.
 
 ### Requirements
 
-* Python 3.14
-* Docker Desktop
-* Docker Compose
-* Git
+- Python 3.14
+- Docker Desktop
+- Docker Compose
+- Git
 
 On Windows, Docker Desktop requires WSL 2 and hardware virtualization.
 
@@ -187,6 +188,8 @@ The RabbitMQ management interface is available at:
 http://localhost:15672
 ```
 
+The application uses the `webhook_delivery` virtual host. Select it when inspecting queues through the management interface.
+
 ### Apply Database Migrations
 
 ```powershell
@@ -213,6 +216,12 @@ Swagger UI is available at:
 
 ```text
 http://127.0.0.1:8000/docs
+```
+
+Press `Ctrl+C` to stop the API cleanly. The runner prints:
+
+```text
+API stopped.
 ```
 
 ## Manual End-to-End Delivery
@@ -245,7 +254,18 @@ In another terminal:
 python -m webhook_delivery_service.api_runner
 ```
 
-### 3. Create a Delivery
+### 3. Start the Long-Running Consumer
+
+In another terminal:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m webhook_delivery_service.consumer_runner
+```
+
+The consumer remains active while the queue is empty and waits asynchronously for new messages.
+
+### 4. Create a Delivery
 
 From a free PowerShell terminal:
 
@@ -277,7 +297,7 @@ attempt_count : 0
 
 At this point, the delivery and outbox message exist in PostgreSQL, but the webhook has not been sent.
 
-### 4. Dispatch the Outbox Message
+### 5. Dispatch the Outbox Message
 
 ```powershell
 python -m webhook_delivery_service.dispatcher_runner
@@ -289,27 +309,23 @@ For a clean outbox, the expected output is:
 Dispatched 1 outbox message(s).
 ```
 
-The message is now available in the `webhook.deliveries` RabbitMQ queue.
+The message is published to RabbitMQ and may be consumed immediately by the already-running consumer.
 
-### 5. Consume and Deliver the Webhook
+### 6. Observe the Delivery
 
-```powershell
-python -m webhook_delivery_service.consumer_runner
-```
-
-Expected output:
-
-```text
-Processed 1 RabbitMQ message(s).
-```
+The consumer automatically receives the RabbitMQ message and sends the webhook without being restarted.
 
 The local receiver should display the real HTTP request, including:
 
-* `X-Delivery-ID`,
-* `X-Event-Type`,
-* the original JSON payload.
+- `X-Delivery-ID`,
+- `X-Event-Type`,
+- the original JSON payload.
 
-### 6. Verify the Final Delivery State
+After processing the message, the consumer remains active and waits for additional deliveries.
+
+To verify multiple-message processing, repeat steps 4 and 5 with another payload. The same consumer process should deliver the additional webhook.
+
+### 7. Verify the Final Delivery State
 
 ```powershell
 Invoke-RestMethod `
@@ -333,6 +349,38 @@ The RabbitMQ queue should show:
 Ready: 0
 Unacked: 0
 Total: 0
+```
+
+The same state can be checked from PowerShell:
+
+```powershell
+docker compose exec rabbitmq rabbitmqctl list_queues `
+    -p webhook_delivery `
+    name messages_ready messages_unacknowledged messages
+```
+
+Expected queue values:
+
+```text
+webhook.deliveries    0    0    0
+```
+
+### 8. Stop the Consumer
+
+Press `Ctrl+C` in the consumer terminal.
+
+Expected output:
+
+```text
+Consumer stopped.
+```
+
+The RabbitMQ connection, HTTP client, and database engine are closed during shutdown. The API and local receiver can then be stopped with `Ctrl+C`.
+
+To stop the Docker services without deleting their data:
+
+```powershell
+docker compose stop
 ```
 
 ## Testing
@@ -363,19 +411,18 @@ The test creates a real delivery and outbox message, reads them through a new da
 
 ## Current Limitations
 
-The current implementation intentionally uses one-shot runners:
+The RabbitMQ consumer is long-running. It waits continuously for new messages, reuses one HTTP client, creates a separate database session for each message, and supports clean shutdown with `Ctrl+C`.
 
-* the dispatcher processes the currently available unpublished outbox messages and exits,
-* the consumer processes at most one RabbitMQ message and exits.
+The dispatcher remains a one-shot runner: it processes the currently available unpublished outbox messages and exits.
 
 The following capabilities are not implemented yet:
 
-* long-running dispatcher and consumer processes,
-* automatic scheduling of `retry_scheduled` deliveries,
-* dead-letter queue configuration,
-* automated RabbitMQ-to-HTTP end-to-end testing,
-* webhook signing and authentication,
-* metrics and production observability,
-* production deployment configuration.
+- long-running dispatcher process,
+- automatic scheduling of `retry_scheduled` deliveries,
+- dead-letter queue configuration,
+- automated RabbitMQ-to-HTTP end-to-end testing,
+- webhook signing and authentication,
+- metrics and production observability,
+- production deployment configuration.
 
 The service provides at-least-once-oriented processing. It does not claim exactly-once delivery.

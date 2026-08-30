@@ -2,6 +2,7 @@ from aio_pika import connect_robust
 from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractQueue,
+    AbstractQueueIterator,
     AbstractRobustConnection,
 )
 from pydantic import ValidationError
@@ -24,6 +25,9 @@ class RabbitMQDeliveryConsumer:
     ) -> None:
         self._connection = connection
         self._queue = queue
+
+    def iter_messages(self) -> AbstractQueueIterator:
+        return self._queue.iterator()
 
     @classmethod
     async def connect(
