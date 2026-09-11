@@ -63,8 +63,8 @@ def test_dispatch_outbox_message_keeps_message_pending_when_publish_fails() -> N
             )
         )
 
-        assert outbox_message.published_at is None
-        session.commit.assert_not_awaited()
+    assert outbox_message.published_at is None
+    session.commit.assert_not_awaited()
 
 
 def test_dispatch_unpublished_outbox_messages_dispatches_each_message() -> None:

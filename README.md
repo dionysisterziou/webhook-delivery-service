@@ -25,13 +25,13 @@ The delivery flow is:
 1. A client calls `POST /deliveries`.
 2. Pydantic validates the JSON request.
 3. A `WebhookDelivery` and an `OutboxMessage` are stored in the same PostgreSQL transaction.
-4. The dispatcher reads unpublished outbox messages.
+4. The long-running dispatcher polls PostgreSQL for unpublished outbox messages.
 5. The dispatcher publishes a persistent `webhook.delivery.requested` message to RabbitMQ.
 6. The long-running consumer receives the message and loads the delivery from PostgreSQL.
 7. The worker sends the webhook through HTTPX.
 8. The delivery is updated as `succeeded`, `retry_scheduled`, or `failed`.
 9. Successfully handled RabbitMQ messages are acknowledged.
-10. The consumer continues waiting for additional messages.
+10. The dispatcher and consumer remain active to process additional deliveries.
 
 ## Reliability Design
 
@@ -42,6 +42,8 @@ The delivery and its publication intent are stored atomically in PostgreSQL.
 This avoids the dual-write problem where a delivery could be stored successfully but the application could stop before notifying RabbitMQ.
 
 The dispatcher publishes rows whose `published_at` value is `NULL`. After a successful RabbitMQ publication, it records the publication timestamp.
+
+The dispatcher reuses one publisher and creates a new database session for each polling cycle. It closes the session and waits one second after each completed batch, including empty batches.
 
 ### At-Least-Once Processing
 
@@ -182,6 +184,8 @@ docker compose ps
 
 Both services should report a healthy state.
 
+The `-d` flag runs the containers in the background and returns the terminal prompt. This command selects PostgreSQL and RabbitMQ; the Python runners below run on the host in `.venv`. Running `docker compose up` without service names can also start the containerized API.
+
 The RabbitMQ management interface is available at:
 
 ```text
@@ -228,6 +232,8 @@ API stopped.
 
 The repository includes a small local HTTP receiver for verifying the complete delivery flow.
 
+Complete the local setup, including database migrations, first. Run the following commands from the repository root in Windows PowerShell. Use a separate terminal for each of the receiver, API, consumer, and dispatcher, and keep all four processes running during the delivery checks. Use a fifth, free terminal for the HTTP requests and RabbitMQ queue checks.
+
 ### 1. Start the Local Receiver
 
 In a separate terminal:
@@ -265,7 +271,18 @@ python -m webhook_delivery_service.consumer_runner
 
 The consumer remains active while the queue is empty and waits asynchronously for new messages.
 
-### 4. Create a Delivery
+### 4. Start the Long-Running Dispatcher
+
+In another terminal:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m webhook_delivery_service.dispatcher_runner
+```
+
+The dispatcher remains active while the outbox is empty and automatically publishes newly created outbox messages. Keep it running for the following steps. Run only one dispatcher process at a time.
+
+### 5. Create a Delivery
 
 From a free PowerShell terminal:
 
@@ -295,25 +312,11 @@ status        : pending
 attempt_count : 0
 ```
 
-At this point, the delivery and outbox message exist in PostgreSQL, but the webhook has not been sent.
-
-### 5. Dispatch the Outbox Message
-
-```powershell
-python -m webhook_delivery_service.dispatcher_runner
-```
-
-For a clean outbox, the expected output is:
-
-```text
-Dispatched 1 outbox message(s).
-```
-
-The message is published to RabbitMQ and may be consumed immediately by the already-running consumer.
+The creation response represents the initial delivery state. Processing runs asynchronously, so the webhook may already have been delivered by the time you inspect this response. Use the GET request in step 7 to check the current persisted state.
 
 ### 6. Observe the Delivery
 
-The consumer automatically receives the RabbitMQ message and sends the webhook without being restarted.
+The already-running dispatcher publishes the new outbox message. The consumer receives the RabbitMQ message and sends the webhook through the worker.
 
 The local receiver should display the real HTTP request, including:
 
@@ -321,9 +324,9 @@ The local receiver should display the real HTTP request, including:
 - `X-Event-Type`,
 - the original JSON payload.
 
-After processing the message, the consumer remains active and waits for additional deliveries.
+After processing the message, both the dispatcher and consumer remain active.
 
-To verify multiple-message processing, repeat steps 4 and 5 with another payload. The same consumer process should deliver the additional webhook.
+To verify another delivery, repeat step 5 with a different payload and inspect its receiver output and final state. Keep the same dispatcher and consumer processes running throughout; no restart is required.
 
 ### 7. Verify the Final Delivery State
 
@@ -365,9 +368,19 @@ Expected queue values:
 webhook.deliveries    0    0    0
 ```
 
-### 8. Stop the Consumer
+### 8. Stop the Python Processes
 
-Press `Ctrl+C` in the consumer terminal.
+After the delivery checks and once the queue is empty, press `Ctrl+C` in the dispatcher terminal and wait for it to exit.
+
+Expected output:
+
+```text
+Dispatcher stopped.
+```
+
+The dispatcher cleanup closes the publisher connection and disposes the database engine.
+
+Then press `Ctrl+C` in the consumer terminal.
 
 Expected output:
 
@@ -375,7 +388,7 @@ Expected output:
 Consumer stopped.
 ```
 
-The RabbitMQ connection, HTTP client, and database engine are closed during shutdown. The API and local receiver can then be stopped with `Ctrl+C`.
+The consumer cleanup closes its RabbitMQ connection and HTTP client and disposes its database engine. Stop the API and local receiver with `Ctrl+C` in their respective terminals.
 
 To stop the Docker services without deleting their data:
 
@@ -392,6 +405,14 @@ python -m pytest -q
 ```
 
 Most tests run without Docker because external dependencies are replaced with mocks.
+
+To run the dispatcher logic and runner tests together:
+
+```powershell
+python -m pytest tests/test_dispatcher.py tests/test_dispatcher_runner.py -q
+```
+
+These tests check mocked behavior. Use the manual delivery flow above to verify real database, RabbitMQ, and HTTP interactions.
 
 ### PostgreSQL Integration Test
 
@@ -413,11 +434,10 @@ The test creates a real delivery and outbox message, reads them through a new da
 
 The RabbitMQ consumer is long-running. It waits continuously for new messages, reuses one HTTP client, creates a separate database session for each message, and supports clean shutdown with `Ctrl+C`.
 
-The dispatcher remains a one-shot runner: it processes the currently available unpublished outbox messages and exits.
+Run a single dispatcher process. Concurrent dispatchers are not coordinated and may select the same unpublished outbox messages. Continuous outbox polling does not schedule due retries.
 
 The following capabilities are not implemented yet:
 
-- long-running dispatcher process,
 - automatic scheduling of `retry_scheduled` deliveries,
 - dead-letter queue configuration,
 - automated RabbitMQ-to-HTTP end-to-end testing,

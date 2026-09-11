@@ -9,17 +9,19 @@ from webhook_delivery_service.dispatcher import (
 from webhook_delivery_service.rabbitmq import RabbitMQOutboxPublisher
 
 
-async def run_dispatcher_once() -> int:
+async def run_dispatcher() -> None:
     settings = Settings()
-
     publisher = await RabbitMQOutboxPublisher.connect(settings)
 
     try:
-        async with async_session_factory() as session:
-            return await dispatch_unpublished_outbox_messages(
-                session=session,
-                publisher=publisher,
-            )
+        while True:
+            async with async_session_factory() as session:
+                await dispatch_unpublished_outbox_messages(
+                    session=session,
+                    publisher=publisher,
+                )
+
+            await asyncio.sleep(1)
     finally:
         await publisher.close()
         await engine.dispose()
@@ -28,12 +30,13 @@ async def run_dispatcher_once() -> int:
 def main() -> None:
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
 
-    dispatched_count = asyncio.run(
-        run_dispatcher_once(),
-        loop_factory=loop_factory,
-    )
-
-    print(f"Dispatched {dispatched_count} outbox message(s).")
+    try:
+        asyncio.run(
+            run_dispatcher(),
+            loop_factory=loop_factory,
+        )
+    except KeyboardInterrupt:
+        print("Dispatcher stopped.")
 
 
 if __name__ == "__main__":
