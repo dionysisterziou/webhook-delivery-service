@@ -62,7 +62,15 @@ Failed HTTP attempts are handled using:
 - `last_error`,
 - terminal `failed` status.
 
-Automatic scheduling and execution of due retries is not implemented yet.
+The retry scheduler selects deliveries whose status is `retry_scheduled` and whose
+`next_attempt_at` is at or before the current UTC time. In one transaction, it
+creates a new outbox message for each selected delivery, changes its status to
+`pending`, and clears `next_attempt_at`. The delivery ID and attempt count are
+preserved; the worker increments the attempt count when it performs the next send.
+
+`FOR UPDATE SKIP LOCKED` prevents concurrent scheduler transactions from selecting
+the same due delivery. The existing dispatcher and consumer process the new
+outbox messages. Start the retry scheduler runner below to enable periodic checks.
 
 ## Technology Stack
 
@@ -226,6 +234,30 @@ Press `Ctrl+C` to stop the API cleanly. The runner prints:
 
 ```text
 API stopped.
+```
+
+## Run the Retry Scheduler
+
+After local setup, start the scheduler in a separate terminal from the repository
+root with `.venv` activated:
+
+```powershell
+python -m webhook_delivery_service.retry_scheduler_runner
+```
+
+The scheduler processes up to 100 due retries per cycle. It creates a new database
+session for each cycle, closes the session, and then waits one second, including
+when no deliveries are due. It stays running without printing polling messages.
+
+Keep the dispatcher and consumer running as well so newly scheduled retries can
+reach the HTTP receiver. The scheduler records work in PostgreSQL; the dispatcher
+publishes it to RabbitMQ.
+
+Press `Ctrl+C` to stop the scheduler and dispose its database engine. Expected
+output:
+
+```text
+Retry scheduler stopped.
 ```
 
 ## Manual End-to-End Delivery
@@ -414,6 +446,13 @@ python -m pytest tests/test_dispatcher.py tests/test_dispatcher_runner.py -q
 
 These tests check mocked behavior. Use the manual delivery flow above to verify real database, RabbitMQ, and HTTP interactions.
 
+The retry scheduler runner tests verify polling, session cleanup, interruption,
+and event-loop selection without connecting to PostgreSQL:
+
+```powershell
+python -m pytest tests/test_retry_scheduler_runner.py -q
+```
+
 ### PostgreSQL Integration Test
 
 The real database integration test is opt-in.
@@ -430,15 +469,36 @@ Remove-Item Env:RUN_DATABASE_INTEGRATION_TESTS
 
 The test creates a real delivery and outbox message, reads them through a new database session, validates their stored state, and removes the test records afterward.
 
+### Retry Scheduler Integration Tests
+
+The scheduler integration tests use real PostgreSQL with tables created from the
+models in a unique temporary schema for each scenario. This keeps the scheduler's
+queries away from existing application deliveries. The temporary schema is
+removed afterward. These tests cover due-time and status filtering, repeated
+polls, batch limits, row locking, and rollback on an outbox insertion failure.
+
+```powershell
+docker compose start postgres
+$env:RUN_DATABASE_INTEGRATION_TESTS = "1"
+try {
+    python -m pytest tests/integration/test_retry_scheduler.py -q
+}
+finally {
+    Remove-Item Env:RUN_DATABASE_INTEGRATION_TESTS
+}
+```
+
 ## Current Limitations
 
 The RabbitMQ consumer is long-running. It waits continuously for new messages, reuses one HTTP client, creates a separate database session for each message, and supports clean shutdown with `Ctrl+C`.
 
-Run a single dispatcher process. Concurrent dispatchers are not coordinated and may select the same unpublished outbox messages. Continuous outbox polling does not schedule due retries.
+Run a single dispatcher process. Concurrent dispatchers are not coordinated and may select the same unpublished outbox messages. Scheduled retries require the separate retry scheduler runner to be running.
+
+The dispatcher and retry scheduler exit on unhandled errors. Restart them after
+addressing the error; automatic process supervision is not configured.
 
 The following capabilities are not implemented yet:
 
-- automatic scheduling of `retry_scheduled` deliveries,
 - dead-letter queue configuration,
 - automated RabbitMQ-to-HTTP end-to-end testing,
 - webhook signing and authentication,
