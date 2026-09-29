@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -12,7 +12,7 @@ from webhook_delivery_service.worker import (
 )
 
 
-async def run_successful_delivery_test() -> None:
+async def run_successful_delivery_test(attempt_count: int = 0) -> None:
     session = MagicMock()
     session.commit = AsyncMock()
 
@@ -25,7 +25,8 @@ async def run_successful_delivery_test() -> None:
         event_type="order.created",
         payload={"order_id": 123},
         status="pending",
-        attempt_count=0,
+        attempt_count=attempt_count,
+        last_error="destination unavailable" if attempt_count else None,
     )
 
     await process_webhook_delivery(
@@ -37,7 +38,7 @@ async def run_successful_delivery_test() -> None:
     sender.send.assert_awaited_once_with(delivery)
 
     assert delivery.status == "succeeded"
-    assert delivery.attempt_count == 1
+    assert delivery.attempt_count == attempt_count + 1
     assert delivery.delivered_at is not None
     assert delivery.last_error is None
     assert delivery.next_attempt_at is None
@@ -47,6 +48,10 @@ async def run_successful_delivery_test() -> None:
 
 def test_process_webhook_delivery_marks_delivery_as_succeeded() -> None:
     asyncio.run(run_successful_delivery_test())
+
+
+def test_process_webhook_delivery_sends_pending_retry() -> None:
+    asyncio.run(run_successful_delivery_test(attempt_count=1))
 
 
 async def run_failed_delivery_test() -> None:
@@ -109,7 +114,7 @@ async def run_terminal_failure_test() -> None:
         target_url="https://example.com/webhooks",
         event_type="order.created",
         payload={"order_id": 123},
-        status="retry_scheduled",
+        status="pending",
         attempt_count=MAX_DELIVERY_ATTEMPTS - 1,
     )
 
@@ -169,3 +174,48 @@ async def run_succeeded_delivery_skip_test() -> None:
 
 def test_process_webhook_delivery_skips_succeeded_delivery() -> None:
     asyncio.run(run_succeeded_delivery_skip_test())
+
+
+async def run_scheduled_retry_skip_test(next_attempt_at: datetime) -> None:
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    sender = MagicMock()
+    sender.send = AsyncMock()
+
+    delivery = WebhookDelivery(
+        id=uuid4(),
+        target_url="https://example.com/webhooks",
+        event_type="order.created",
+        payload={"order_id": 123},
+        status="retry_scheduled",
+        attempt_count=1,
+        next_attempt_at=next_attempt_at,
+        last_error="destination unavailable",
+    )
+
+    # A duplicate message arrives before the scheduler has released the retry.
+    await process_webhook_delivery(
+        session=session,
+        sender=sender,
+        delivery=delivery,
+    )
+
+    sender.send.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+    assert delivery.status == "retry_scheduled"
+    assert delivery.attempt_count == 1
+    assert delivery.next_attempt_at == next_attempt_at
+    assert delivery.last_error == "destination unavailable"
+    assert delivery.delivered_at is None
+
+
+def test_process_webhook_delivery_skips_retry_before_due_time() -> None:
+    next_attempt_at = datetime.now(UTC) + timedelta(minutes=5)
+    asyncio.run(run_scheduled_retry_skip_test(next_attempt_at))
+
+
+def test_process_webhook_delivery_leaves_due_retry_for_scheduler() -> None:
+    next_attempt_at = datetime.now(UTC) - timedelta(minutes=5)
+    asyncio.run(run_scheduled_retry_skip_test(next_attempt_at))

@@ -50,6 +50,10 @@ async def process_webhook_delivery(
     if delivery.status in {"succeeded", "failed"}:
         return
 
+    # The scheduler moves due retries to pending and creates their outbox messages.
+    if delivery.status == "retry_scheduled":
+        return
+
     delivery.status = "processing"
     delivery.attempt_count += 1
 
