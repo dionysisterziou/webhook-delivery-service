@@ -13,7 +13,9 @@ MAX_DELIVERY_ATTEMPTS = 5
 
 
 class WebhookSendError(Exception):
-    pass
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class WebhookSender(Protocol):
@@ -62,7 +64,7 @@ async def process_webhook_delivery(
     except WebhookSendError as error:
         delivery.last_error = str(error)
 
-        if delivery.attempt_count >= MAX_DELIVERY_ATTEMPTS:
+        if not error.retryable or delivery.attempt_count >= MAX_DELIVERY_ATTEMPTS:
             delivery.status = "failed"
             delivery.next_attempt_at = None
         else:

@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import pytest
+
 from webhook_delivery_service.models import WebhookDelivery
 from webhook_delivery_service.worker import (
     MAX_DELIVERY_ATTEMPTS,
@@ -137,6 +139,46 @@ async def run_terminal_failure_test() -> None:
 
 def test_process_webhook_delivery_marks_final_attempt_as_failed() -> None:
     asyncio.run(run_terminal_failure_test())
+
+
+async def run_permanent_failure_test(previous_attempts: int) -> None:
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    sender = MagicMock()
+    sender.send = AsyncMock(
+        side_effect=WebhookSendError("HTTP 400 Bad Request", retryable=False)
+    )
+
+    delivery = WebhookDelivery(
+        id=uuid4(),
+        target_url="https://example.com/webhooks",
+        event_type="order.created",
+        payload={"order_id": 123},
+        status="pending",
+        attempt_count=previous_attempts,
+    )
+
+    await process_webhook_delivery(
+        session=session,
+        sender=sender,
+        delivery=delivery,
+    )
+
+    sender.send.assert_awaited_once_with(delivery)
+    session.commit.assert_awaited_once_with()
+    assert delivery.status == "failed"
+    assert delivery.attempt_count == previous_attempts + 1
+    assert delivery.next_attempt_at is None
+    assert delivery.delivered_at is None
+    assert delivery.last_error == "HTTP 400 Bad Request"
+
+
+@pytest.mark.parametrize("previous_attempts", [0, 2])
+def test_process_webhook_delivery_stops_after_permanent_failure(
+    previous_attempts: int,
+) -> None:
+    asyncio.run(run_permanent_failure_test(previous_attempts))
 
 
 async def run_succeeded_delivery_skip_test() -> None:
