@@ -8,6 +8,30 @@ app = FastAPI(title="Local Webhook Receiver")
 attempts_by_delivery: dict[str, int] = {}
 
 
+@app.post("/webhooks/reject")
+async def reject_webhook(
+    payload: dict[str, Any],
+    x_delivery_id: str = Header(),
+    x_event_type: str = Header(),
+) -> None:
+    attempt = attempts_by_delivery.get(x_delivery_id, 0) + 1
+    attempts_by_delivery[x_delivery_id] = attempt
+    print(
+        {
+            "delivery_id": x_delivery_id,
+            "event_type": x_event_type,
+            "payload": payload,
+            "receiver_attempt": attempt,
+            "status_code": 400,
+        },
+        flush=True,
+    )
+    raise HTTPException(
+        status_code=400,
+        detail="Intentional permanent failure for the delivery demo",
+    )
+
+
 @app.post("/webhooks")
 async def receive_webhook(
     payload: dict[str, Any],

@@ -53,7 +53,22 @@ The worker therefore includes terminal-state guards to avoid processing deliveri
 
 ### Retry State
 
-Failed HTTP attempts are handled using:
+The sender classifies failures and includes a `retryable` flag in
+`WebhookSendError`. The worker applies the following policy:
+
+| Outcome | Delivery behavior |
+| --- | --- |
+| HTTP 2xx | Mark the delivery as `succeeded`. |
+| HTTP 408, 429, or 5xx | Schedule a retry unless the attempt limit is reached. |
+| Other HTTP status errors, including remaining 4xx and unfollowed 3xx | Mark the delivery as `failed` immediately. |
+| HTTPX request errors, including network errors and timeouts | Schedule a retry unless the attempt limit is reached. |
+
+A permanent failure still counts as an attempt and records `last_error`, but
+leaves `next_attempt_at` unset. Once this outcome is committed, the consumer
+acknowledges the RabbitMQ message. A handled HTTP failure does not requeue the
+current message immediately.
+
+Retryable failures are handled using:
 
 - capped exponential backoff,
 - jitter,
@@ -62,11 +77,18 @@ Failed HTTP attempts are handled using:
 - `last_error`,
 - terminal `failed` status.
 
+Retries use the existing backoff and jitter policy. `Retry-After` response
+headers are not currently used, and the consumer's HTTP client does not follow
+redirects by default.
+
 The retry scheduler selects deliveries whose status is `retry_scheduled` and whose
 `next_attempt_at` is at or before the current UTC time. In one transaction, it
 creates a new outbox message for each selected delivery, changes its status to
 `pending`, and clears `next_attempt_at`. The delivery ID and attempt count are
 preserved; the worker increments the attempt count when it performs the next send.
+
+The worker leaves `retry_scheduled` deliveries unchanged, including when a
+duplicate message arrives. Only the scheduler moves these deliveries to `pending`.
 
 `FOR UPDATE SKIP LOCKED` prevents concurrent scheduler transactions from selecting
 the same due delivery. The existing dispatcher and consumer process the new
@@ -428,6 +450,82 @@ To stop the Docker services without deleting their data:
 docker compose stop
 ```
 
+## Manual Failure Classification Check
+
+Complete local setup and migrations first. Keep PostgreSQL and RabbitMQ running,
+along with one instance of each Python process: API, dispatcher, consumer, retry
+scheduler and example receiver. Use a separate terminal for each process and a
+sixth terminal for requests. The runner commands are documented above. Restart
+the consumer and receiver after updating their source, and keep one receiver
+process running throughout the check: its attempt counter is held in memory.
+
+The receiver provides two controlled failures:
+
+- `/webhooks/reject` always responds with HTTP 400.
+- `/webhooks/fail-once` responds with HTTP 503 on the first request for each
+  delivery ID, then HTTP 200 on subsequent requests for that same ID.
+
+Create one delivery for each endpoint from the free PowerShell terminal:
+
+```powershell
+$rejectedBody = @{
+    target_url = "http://127.0.0.1:9000/webhooks/reject"
+    event_type = "integration.failure.permanent"
+    payload = @{ source = "failure-classification-check" }
+} | ConvertTo-Json -Depth 3
+
+$rejectedDelivery = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:8000/deliveries" `
+    -ContentType "application/json" `
+    -Body $rejectedBody
+
+$retryBody = @{
+    target_url = "http://127.0.0.1:9000/webhooks/fail-once"
+    event_type = "integration.failure.retryable"
+    payload = @{ source = "failure-classification-check" }
+} | ConvertTo-Json -Depth 3
+
+$retryDelivery = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:8000/deliveries" `
+    -ContentType "application/json" `
+    -Body $retryBody
+```
+
+Read the two persisted states:
+
+```powershell
+foreach ($deliveryId in @($rejectedDelivery.id, $retryDelivery.id)) {
+    Invoke-RestMethod `
+        -Uri "http://127.0.0.1:8000/deliveries/$deliveryId" |
+        Select-Object id, status, attempt_count, next_attempt_at, delivered_at, last_error |
+        Format-List
+}
+```
+
+Processing is asynchronous, so the first GET may still show `pending`. After
+the first attempts, expect:
+
+- The rejected delivery: `failed`, one attempt, a `last_error` containing HTTP
+  400, and null `next_attempt_at` and `delivered_at`.
+- The fail-once delivery: `retry_scheduled`, one attempt, and a future
+  `next_attempt_at`. The first retry delay is 30-33 seconds, plus processing and
+  polling time.
+
+Repeat only the GET block after about 40 seconds. The rejected delivery must
+remain `failed` with one attempt. The fail-once delivery should become
+`succeeded` with two attempts, a non-null `delivered_at`, and cleared
+`next_attempt_at` and `last_error`. If it has not finished, inspect the running
+processes and repeat the GET within a 90-second observation window; a timeout
+or an unexpected final state is not a passing result.
+
+The receiver should show one HTTP 400 request for the rejected delivery, and
+HTTP 503 followed by HTTP 200 for the fail-once delivery. Check RabbitMQ using
+the queue command above: once processing finishes, the queue should contain
+zero ready and unacknowledged messages if no other work is active. Stop all five
+Python processes with `Ctrl+C` after the checks.
+
 ## Testing
 
 Run the regular test suite:
@@ -437,6 +535,17 @@ python -m pytest -q
 ```
 
 Most tests run without Docker because external dependencies are replaced with mocks.
+
+To check failure classification and its interaction with the consumer:
+
+```powershell
+python -m pytest tests/test_http_sender.py tests/test_worker.py tests/test_consumer.py tests/test_rabbitmq_consumer.py tests/test_delivery_failure_handling.py -q
+```
+
+The component checks run the real handler, worker and HTTP sender with mocked
+HTTP transport, database session and RabbitMQ message acknowledgements. They
+verify that recorded permanent and retryable HTTP failures are acknowledged
+after commit. They do not replace the manual checks with real services above.
 
 To run the dispatcher logic and runner tests together:
 

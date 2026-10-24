@@ -29,5 +29,9 @@ class HttpxWebhookSender:
             )
 
             response.raise_for_status()
-        except httpx.HTTPError as error:
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code
+            retryable = status_code in {408, 429} or 500 <= status_code < 600
+            raise WebhookSendError(str(error), retryable=retryable) from error
+        except httpx.RequestError as error:
             raise WebhookSendError(str(error)) from error
