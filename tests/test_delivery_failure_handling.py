@@ -61,7 +61,9 @@ async def run_delivery_failure_handling_test(
         )
 
     assert len(requests) == 1
-    session.get.assert_awaited_once_with(WebhookDelivery, delivery.id)
+    session.get.assert_awaited_once_with(
+        WebhookDelivery, delivery.id, with_for_update=True
+    )
     message.ack.assert_awaited_once_with()
     message.nack.assert_not_awaited()
     message.reject.assert_not_awaited()

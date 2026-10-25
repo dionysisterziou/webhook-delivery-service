@@ -95,6 +95,7 @@ async def run_handle_delivery_requested_message() -> None:
     session.get.assert_awaited_once_with(
         WebhookDelivery,
         delivery_id,
+        with_for_update=True,
     )
 
 
@@ -139,6 +140,7 @@ async def run_handle_delivery_requested_message_not_found() -> None:
     session.get.assert_awaited_once_with(
         WebhookDelivery,
         delivery_id,
+        with_for_update=True,
     )
 
 

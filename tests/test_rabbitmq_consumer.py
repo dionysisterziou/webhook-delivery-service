@@ -109,6 +109,7 @@ async def run_consume_rabbitmq_delivery_message_missing_delivery() -> None:
     session.get.assert_awaited_once_with(
         WebhookDelivery,
         delivery_id,
+        with_for_update=True,
     )
     message.reject.assert_awaited_once_with(requeue=False)
     message.ack.assert_not_awaited()
