@@ -109,6 +109,35 @@ duplicate message arrives. Only the scheduler moves these deliveries to `pending
 the same due delivery. The existing dispatcher and consumer process the new
 outbox messages. Start the retry scheduler runner below to enable periodic checks.
 
+### Rejected Messages and the Dead Letter Queue
+
+Invalid message bodies and references to missing deliveries are rejected with
+`requeue=False`. Configure dead-letter routing using the setup command below so
+RabbitMQ sends these messages to a separate durable queue for investigation.
+
+For the default delivery queue, setup creates:
+
+| Resource | Name | Purpose |
+| --- | --- | --- |
+| Delivery queue | `webhook.deliveries` | Normal consumer input. |
+| Direct exchange | `webhook.deliveries.dlx` | Routes rejected messages. |
+| Dead letter queue | `webhook.deliveries.dlq` | Holds rejected messages for inspection. |
+| Policy | `webhook.deliveries.dead-letter` | Applies dead-letter routing only to the delivery queue. |
+
+Names are derived from `RABBITMQ_DELIVERY_QUEUE`. The policy uses an escaped,
+anchored queue-name pattern and does not apply to the DLQ itself. The exchange
+binding uses the original delivery queue name as its routing key.
+
+HTTP delivery outcomes keep their existing handling: permanent failures become
+`failed`, retryable failures can become `retry_scheduled`, and the message is
+acknowledged after the outcome is committed. A database error still causes
+`nack(requeue=True)`. These cases do not use the DLQ. There is no automatic replay
+from the DLQ.
+
+This uses the existing classic queues. Default RabbitMQ dead-letter forwarding
+does not use internal publisher confirms and can lose a message if the target
+queue is unavailable; durable queues do not remove that limitation.
+
 ## Technology Stack
 
 - Python 3.14
@@ -238,6 +267,38 @@ http://localhost:15672
 ```
 
 The application uses the `webhook_delivery` virtual host. Select it when inspecting queues through the management interface.
+
+### Configure Dead-Letter Routing
+
+After RabbitMQ is healthy, run this once before starting consumers:
+
+```powershell
+python -m webhook_delivery_service.rabbitmq_setup
+```
+
+Expected output with the default queue name:
+
+```text
+Dead-letter routing configured: webhook.deliveries -> webhook.deliveries.dlq
+```
+
+The command reads the existing `.env` settings and calls RabbitMQ's Management
+HTTP API at `RABBITMQ_HOST:RABBITMQ_MANAGEMENT_PORT` (default port `15672`). The
+Compose RabbitMQ image already includes the management plugin. The configured
+RabbitMQ user must be allowed to declare resources and manage policies. No
+PostgreSQL connection is made by this command.
+
+Setup declares the durable destination queue/exchange and their binding, then
+applies a policy to the existing delivery queue. It waits until RabbitMQ reports
+the expected effective policy. It does not delete or purge queues. Re-running it
+with the same configuration retains queued messages; conflicting declarations
+raise an error instead of recreating queues.
+
+The policy and durable resources persist in the RabbitMQ data volume. Repeat
+setup after creating a fresh broker volume or changing the delivery queue name.
+Normal publishers and consumers continue using AMQP and do not call the
+Management API. Keep the existing credentials in `.env`; the new management
+port setting has a default and is optional.
 
 ### Apply Database Migrations
 
@@ -635,6 +696,44 @@ finally {
 }
 ```
 
+### RabbitMQ Dead-Letter Tests
+
+The focused tests without a broker are:
+
+```powershell
+python -m pytest tests/test_rabbitmq_setup.py tests/test_rabbitmq.py tests/test_rabbitmq_consumer.py tests/test_delivery_failure_handling.py -q
+```
+
+The opt-in broker integration tests require RabbitMQ and its Management API.
+They create uniquely named temporary queues, an exchange and a policy in the
+configured virtual host, and delete only those test resources afterward.
+Application queues and their messages are not consumed or cleared by these tests.
+
+```powershell
+docker compose start rabbitmq
+$env:RUN_RABBITMQ_INTEGRATION_TESTS = "1"
+try {
+    python -m pytest tests/integration/test_rabbitmq_dead_lettering.py -q
+}
+finally {
+    Remove-Item Env:RUN_RABBITMQ_INTEGRATION_TESTS
+}
+```
+
+The six scenarios cover:
+
+- Invalid JSON and a missing delivery: the original body and message ID reach
+  the DLQ with an `x-death` header recording rejection from the source queue.
+- Success: one send and an acknowledged message; repeating setup while the
+  message is queued does not remove it.
+- Permanent and retryable HTTP failures: the existing worker outcomes are
+  recorded and acknowledged, without a dead letter.
+- Database errors: the message is requeued and redelivered, without a dead letter.
+
+The broker, publications and acknowledgements are real. The database session and
+HTTP sender are mocked; these tests do not require PostgreSQL or the example
+receiver and are not full HTTP end-to-end tests.
+
 ## Current Limitations
 
 The RabbitMQ consumer is long-running. It waits continuously for new messages, reuses one HTTP client, creates a separate database session for each message, and supports clean shutdown with `Ctrl+C`.
@@ -646,7 +745,6 @@ addressing the error; automatic process supervision is not configured.
 
 The following capabilities are not implemented yet:
 
-- dead-letter queue configuration,
 - automated RabbitMQ-to-HTTP end-to-end testing,
 - webhook signing and authentication,
 - metrics and production observability,

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     rabbitmq_host: str = "localhost"
     rabbitmq_port: int = 5672
+    rabbitmq_management_port: int = 15672
     rabbitmq_default_user: str
     rabbitmq_default_pass: SecretStr
     rabbitmq_default_vhost: str
