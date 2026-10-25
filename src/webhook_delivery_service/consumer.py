@@ -38,9 +38,12 @@ async def handle_delivery_requested_message(
 ) -> None:
     message = parse_delivery_requested_message(message_body)
 
+    # Serialize handlers for this delivery until the transaction ends.
+    # Check its state only after acquiring the row lock.
     delivery = await session.get(
         WebhookDelivery,
         message.payload.delivery_id,
+        with_for_update=True,
     )
 
     if delivery is None:

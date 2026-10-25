@@ -51,6 +51,21 @@ A message may be delivered more than once if a process stops after performing wo
 
 The worker therefore includes terminal-state guards to avoid processing deliveries already marked as `succeeded` or `failed`.
 
+The consumer loads each delivery with `SELECT ... FOR UPDATE` before the worker
+checks its state. Concurrent handlers for the same delivery wait for that row
+lock. Once the first transaction commits, the next handler reads the updated
+state and applies the existing worker guards.
+
+The lock is held during the HTTP attempt until commit or rollback. Closing the
+per-message session also ends any remaining transaction, including when a guard
+returns without sending. This deliberately keeps a database transaction open
+during HTTP I/O. Other delivery rows can be processed independently.
+
+This coordinates concurrent handlers; delivery remains at least once. If a
+receiver accepts the webhook but the worker stops before committing its result,
+a later handler can send it again. Receivers can use `X-Delivery-ID` to deduplicate
+the same delivery.
+
 ### Retry State
 
 The sender classifies failures and includes a `retryable` flag in
@@ -591,6 +606,29 @@ docker compose start postgres
 $env:RUN_DATABASE_INTEGRATION_TESTS = "1"
 try {
     python -m pytest tests/integration/test_retry_scheduler.py -q
+}
+finally {
+    Remove-Item Env:RUN_DATABASE_INTEGRATION_TESTS
+}
+```
+
+### Consumer Concurrency Integration Test
+
+This test uses real PostgreSQL with two independent sessions processing the same
+delivery. A controlled sender pauses the first attempt while the second handler
+starts. The test observes either a duplicate send or a PostgreSQL lock wait,
+releases the first sender, and requires exactly one send and a persisted
+`succeeded` delivery with one attempt. A unique temporary schema isolates its
+data from application deliveries and is removed afterward.
+
+It exercises the real consumer handler and worker, with a controlled sender;
+RabbitMQ and an HTTP receiver are not required.
+
+```powershell
+docker compose start postgres
+$env:RUN_DATABASE_INTEGRATION_TESTS = "1"
+try {
+    python -m pytest tests/integration/test_consumer_concurrency.py -q
 }
 finally {
     Remove-Item Env:RUN_DATABASE_INTEGRATION_TESTS
