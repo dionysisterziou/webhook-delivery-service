@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,8 @@ from webhook_delivery_service.schemas import (
     WebhookDeliveryResponse,
 )
 from webhook_delivery_service.services import (
+    IdempotencyConflictError,
+    create_idempotent_webhook_delivery,
     create_webhook_delivery,
     get_webhook_delivery,
 )
@@ -47,15 +49,43 @@ async def readiness() -> dict[str, str]:
     "/deliveries",
     response_model=WebhookDeliveryResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        200: {
+            "model": WebhookDeliveryResponse,
+            "description": "Existing delivery for the same Idempotency-Key and request",
+        },
+        409: {"description": "Idempotency-Key was used with a different request"},
+    },
 )
 async def create_delivery(
     delivery_data: WebhookDeliveryCreate,
     session: Annotated[AsyncSession, Depends(get_database_session)],
+    response: Response,
+    idempotency_key: Annotated[
+        str | None,
+        Header(min_length=1, max_length=255),
+    ] = None,
 ) -> WebhookDelivery:
-    return await create_webhook_delivery(
-        session=session,
-        delivery_data=delivery_data,
-    )
+    if idempotency_key is None:
+        return await create_webhook_delivery(
+            session=session,
+            delivery_data=delivery_data,
+        )
+
+    try:
+        delivery, created = await create_idempotent_webhook_delivery(
+            session=session,
+            delivery_data=delivery_data,
+            idempotency_key=idempotency_key,
+        )
+    except IdempotencyConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return delivery
 
 
 @app.get(
