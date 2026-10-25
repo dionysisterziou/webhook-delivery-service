@@ -201,6 +201,62 @@ A newly created delivery starts with:
 }
 ```
 
+#### Delivery creation idempotency
+
+Clients can send an optional `Idempotency-Key` header with `POST /deliveries`.
+Generate the key once for a logical creation request and reuse it when retrying
+that request, including after a timeout or lost response.
+
+| Request | Result |
+| --- | --- |
+| New key | HTTP 201; creates one delivery and its initial outbox message |
+| Same key and same validated request | HTTP 200; returns the existing delivery in its current state |
+| Same key with changed target URL, event type or payload | HTTP 409; creates no additional delivery or outbox message |
+| Missing key | HTTP 201; each request creates a separate delivery |
+| Empty key or key longer than 255 characters | HTTP 422 |
+
+Keys are case-sensitive and global to this single-tenant application. They have
+no expiry and remain reserved for the lifetime of the delivery row. A new key
+means a new creation request, even if its body is identical to an earlier one.
+Reusing a key does not restart a `failed` or `succeeded` delivery.
+
+The request fingerprint is a SHA-256 digest of the validated request serialized
+with sorted JSON object keys. Object key order is ignored; array order and JSON
+values are significant. This is not a webhook signature or an authentication
+mechanism. The key and fingerprint are internal fields, not response fields.
+
+A PostgreSQL unique constraint on `idempotency_key`, together with
+`INSERT ... ON CONFLICT DO NOTHING`, arbitrates simultaneous requests. Only the
+transaction that inserts a new delivery adds an outbox message. Both rows commit
+together; a rollback leaves the key available for a later request. Replays load
+the existing row using a new query under the default `READ COMMITTED` isolation.
+
+This prevents duplicate API creation requests with the same key. Webhook
+transmission still follows the existing at-least-once delivery guarantees.
+
+Example in PowerShell, using the same key and body for both requests:
+
+```powershell
+$key = [guid]::NewGuid().ToString()
+$body = @{
+    target_url = "http://127.0.0.1:9000/webhooks"
+    event_type = "order.created"
+    payload = @{ order_id = 123 }
+} | ConvertTo-Json -Depth 3
+
+$first = Invoke-RestMethod -Method Post `
+    -Uri "http://127.0.0.1:8000/deliveries" `
+    -Headers @{ "Idempotency-Key" = $key } `
+    -ContentType "application/json" -Body $body
+
+$second = Invoke-RestMethod -Method Post `
+    -Uri "http://127.0.0.1:8000/deliveries" `
+    -Headers @{ "Idempotency-Key" = $key } `
+    -ContentType "application/json" -Body $body
+
+$first.id -eq $second.id # True
+```
+
 ### Get Delivery
 
 ```http
@@ -733,6 +789,45 @@ The six scenarios cover:
 The broker, publications and acknowledgements are real. The database session and
 HTTP sender are mocked; these tests do not require PostgreSQL or the example
 receiver and are not full HTTP end-to-end tests.
+
+### API Idempotency Tests
+
+Run the focused unit and API component checks:
+
+```powershell
+python -m pytest tests/test_idempotency.py tests/test_services.py tests/test_deliveries.py tests/test_deliveries_api.py -q
+```
+
+For real persistence and concurrency checks, start PostgreSQL and apply migrations
+before running the updated application:
+
+```powershell
+docker compose up -d postgres
+python -m alembic upgrade head
+
+$env:RUN_DATABASE_INTEGRATION_TESTS = "1"
+try {
+    python -m pytest tests/integration/test_api_idempotency.py -q
+}
+finally {
+    Remove-Item Env:RUN_DATABASE_INTEGRATION_TESTS
+}
+```
+
+The eleven integration cases cover replay, conflicts in all three request fields,
+independent requests with different or missing keys, preservation of terminal
+states, concurrent same-key requests with matching or conflicting bodies, and
+rollback before commit. The concurrency checks hold the first transaction open
+and observe PostgreSQL blocking the second before releasing the first. They do
+not rely on a fixed sleep to establish overlap. The rollback check injects a
+failure after flushing both rows into a real transaction, then verifies cleanup
+and successful reuse of the key.
+
+These tests call the real FastAPI application in-process and use real PostgreSQL,
+with a separate temporary schema per case. They require no Uvicorn, RabbitMQ,
+dispatcher, consumer or HTTP receiver. Schemas are cleaned up after each case.
+The test schemas use ORM metadata; `alembic upgrade head` separately applies and
+checks the migration against the application's existing database.
 
 ## Current Limitations
 

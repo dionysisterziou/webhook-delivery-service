@@ -55,6 +55,9 @@ class WebhookDelivery(Base):
     event_type: Mapped[str] = mapped_column(String(255))
     payload: Mapped[dict[str, object]] = mapped_column(JSONB)
 
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+
     status: Mapped[str] = mapped_column(
         String(32),
         default="pending",
