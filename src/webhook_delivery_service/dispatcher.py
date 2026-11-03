@@ -4,6 +4,7 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from webhook_delivery_service.delivery_logs import log_event
 from webhook_delivery_service.models import OutboxMessage
 
 
@@ -24,6 +25,10 @@ async def dispatch_outbox_message(
     outbox_message.published_at = datetime.now(UTC)
 
     await session.commit()
+    log_event(
+        "dispatcher", "outbox.published", outbox_message.delivery_id,
+        message_id=outbox_message.id,
+    )
 
 
 async def dispatch_unpublished_outbox_messages(

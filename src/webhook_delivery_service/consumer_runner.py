@@ -5,6 +5,7 @@ import httpx
 
 from webhook_delivery_service.config import Settings
 from webhook_delivery_service.database import async_session_factory, engine
+from webhook_delivery_service.delivery_logs import delivery_log_output
 from webhook_delivery_service.http_sender import HttpxWebhookSender
 from webhook_delivery_service.rabbitmq_consumer import (
     RabbitMQDeliveryConsumer,
@@ -37,10 +38,11 @@ def main() -> None:
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
 
     try:
-        asyncio.run(
-            run_consumer(),
-            loop_factory=loop_factory,
-        )
+        with delivery_log_output():
+            asyncio.run(
+                run_consumer(),
+                loop_factory=loop_factory,
+            )
     except KeyboardInterrupt:
         print("Consumer stopped.")
 

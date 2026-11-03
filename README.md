@@ -660,6 +660,11 @@ Python processes with `Ctrl+C` after the checks.
 
 ## Testing
 
+The API, dispatcher, consumer/worker and retry scheduler emit one JSON line per
+delivery event to stdout. Use `delivery_id` across processes and `message_id`
+to distinguish outbox publications. See [Trace one delivery](docs/delivery-logs.md)
+for a PowerShell walkthrough of the 503 → retry → 200 flow and its focused tests.
+
 Run the regular test suite:
 
 ```powershell

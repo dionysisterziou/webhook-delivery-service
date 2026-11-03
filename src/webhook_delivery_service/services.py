@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from webhook_delivery_service.delivery_logs import log_event
 from webhook_delivery_service.models import (
     OutboxMessage,
     WebhookDelivery,
@@ -79,11 +80,13 @@ async def create_idempotent_webhook_delivery(
         )
         existing = result.one()
         if existing.request_fingerprint != fingerprint:
+            log_event("api", "delivery.key_conflict", existing.id)
             raise IdempotencyConflictError(
                 "Idempotency-Key was already used with a different request"
             )
         # Preserve the current status and attempt history. Closing the request's
         # session releases this read transaction without changing the delivery.
+        log_event("api", "delivery.replayed", existing.id, status=existing.status)
         return existing, False
 
     await _commit_delivery_with_outbox(session, delivery)
@@ -103,6 +106,7 @@ async def _commit_delivery_with_outbox(
     session.add(outbox_message)
 
     await session.commit()
+    log_event("api", "delivery.created", delivery.id, message_id=outbox_message.id)
     await session.refresh(delivery)
 
 

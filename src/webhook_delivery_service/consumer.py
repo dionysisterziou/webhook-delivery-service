@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from webhook_delivery_service.delivery_logs import log_event
 from webhook_delivery_service.models import WebhookDelivery
 from webhook_delivery_service.worker import (
     WebhookSender,
@@ -37,6 +38,10 @@ async def handle_delivery_requested_message(
     message_body: bytes,
 ) -> None:
     message = parse_delivery_requested_message(message_body)
+    log_event(
+        "consumer", "message.received", message.payload.delivery_id,
+        message_id=message.message_id,
+    )
 
     # Serialize handlers for this delivery until the transaction ends.
     # Check its state only after acquiring the row lock.

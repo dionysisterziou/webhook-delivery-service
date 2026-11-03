@@ -1,9 +1,11 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from random import uniform
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from webhook_delivery_service.delivery_logs import log_event
 from webhook_delivery_service.models import WebhookDelivery
 
 BASE_RETRY_DELAY_SECONDS = 30
@@ -49,15 +51,17 @@ async def process_webhook_delivery(
     sender: WebhookSender,
     delivery: WebhookDelivery,
 ) -> None:
-    if delivery.status in {"succeeded", "failed"}:
-        return
-
     # The scheduler moves due retries to pending and creates their outbox messages.
-    if delivery.status == "retry_scheduled":
+    if delivery.status in {"succeeded", "failed", "retry_scheduled"}:
+        log_event(
+            "worker", "delivery.skipped", delivery.id,
+            status=delivery.status, attempt_count=delivery.attempt_count,
+        )
         return
 
     delivery.status = "processing"
     delivery.attempt_count += 1
+    log_event("worker", "attempt.started", delivery.id, attempt_count=delivery.attempt_count)
 
     try:
         await sender.send(delivery)
@@ -67,13 +71,22 @@ async def process_webhook_delivery(
         if not error.retryable or delivery.attempt_count >= MAX_DELIVERY_ATTEMPTS:
             delivery.status = "failed"
             delivery.next_attempt_at = None
+            reason = "attempt_limit" if error.retryable else "non_retryable_error"
         else:
             delivery.status = "retry_scheduled"
+            reason = "retryable_error"
             delivery.next_attempt_at = datetime.now(UTC) + calculate_retry_delay(
                 delivery.attempt_count
             )
 
         await session.commit()
+        log_event(
+            "worker", f"delivery.{delivery.status}", delivery.id,
+            attempt_count=delivery.attempt_count, status=delivery.status,
+            next_attempt_at=delivery.next_attempt_at,
+            reason=reason,
+            level=logging.ERROR if delivery.status == "failed" else logging.WARNING,
+        )
         return
 
     delivery.status = "succeeded"
@@ -82,3 +95,7 @@ async def process_webhook_delivery(
     delivery.next_attempt_at = None
 
     await session.commit()
+    log_event(
+        "worker", "delivery.succeeded", delivery.id,
+        status=delivery.status, attempt_count=delivery.attempt_count,
+    )
