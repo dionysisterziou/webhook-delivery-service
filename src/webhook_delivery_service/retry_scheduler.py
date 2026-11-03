@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from webhook_delivery_service.delivery_logs import log_event
 from webhook_delivery_service.models import OutboxMessage, WebhookDelivery
 
 
@@ -26,6 +27,7 @@ async def schedule_due_webhook_retries(
         .with_for_update(skip_locked=True)
     )
     deliveries = result.all()
+    pending_messages: list[tuple[OutboxMessage, int]] = []
 
     for delivery in deliveries:
         outbox_message = OutboxMessage(
@@ -34,10 +36,16 @@ async def schedule_due_webhook_retries(
             payload={"delivery_id": str(delivery.id)},
         )
         session.add(outbox_message)
+        pending_messages.append((outbox_message, delivery.attempt_count))
 
         delivery.status = "pending"
         delivery.next_attempt_at = None
 
     await session.commit()
+    for message, attempt_count in pending_messages:
+        log_event(
+            "scheduler", "retry.queued", message.delivery_id, message_id=message.id,
+            status="pending", attempt_count=attempt_count,
+        )
 
     return len(deliveries)
