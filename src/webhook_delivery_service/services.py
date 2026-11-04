@@ -2,7 +2,7 @@ import hashlib
 import json
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,7 +11,11 @@ from webhook_delivery_service.models import (
     OutboxMessage,
     WebhookDelivery,
 )
-from webhook_delivery_service.schemas import WebhookDeliveryCreate
+from webhook_delivery_service.schemas import (
+    DeliveryMetrics,
+    DeliveryStatusCounts,
+    WebhookDeliveryCreate,
+)
 
 
 class IdempotencyConflictError(Exception):
@@ -115,3 +119,25 @@ async def get_webhook_delivery(
     delivery_id: UUID,
 ) -> WebhookDelivery | None:
     return await session.get(WebhookDelivery, delivery_id)
+
+
+async def get_delivery_metrics(session: AsyncSession) -> DeliveryMetrics:
+    unpublished_count = (
+        select(func.count())
+        .select_from(OutboxMessage)
+        .where(OutboxMessage.published_at.is_(None))
+        .scalar_subquery()
+    )
+    # Count each table independently within the same PostgreSQL snapshot.
+    status_counts = [
+        func.count().filter(WebhookDelivery.status == status).label(status)
+        for status in DeliveryStatusCounts.model_fields
+    ]
+    statement = select(
+        *status_counts, unpublished_count.label("unpublished_outbox_messages")
+    ).select_from(WebhookDelivery)
+    row = (await session.execute(statement)).mappings().one()
+    return DeliveryMetrics(
+        deliveries_by_status=DeliveryStatusCounts.model_validate(row),
+        unpublished_outbox_messages=row["unpublished_outbox_messages"],
+    )
