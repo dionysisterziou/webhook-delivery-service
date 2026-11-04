@@ -1,10 +1,13 @@
 import httpx
+from pydantic import TypeAdapter, ValidationError
 
 from webhook_delivery_service.delivery_logs import log_event
 from webhook_delivery_service.models import WebhookDelivery
+from webhook_delivery_service.schemas import EVENT_TYPE_REQUIREMENT, EventType
 from webhook_delivery_service.worker import WebhookSendError
 
 WEBHOOK_REQUEST_TIMEOUT_SECONDS = 10.0
+_event_type_adapter = TypeAdapter(EventType)
 
 
 class HttpxWebhookSender:
@@ -19,12 +22,17 @@ class HttpxWebhookSender:
         delivery: WebhookDelivery,
     ) -> None:
         try:
+            event_type = _event_type_adapter.validate_python(delivery.event_type)
+        except ValidationError as error:
+            raise WebhookSendError(EVENT_TYPE_REQUIREMENT, retryable=False) from error
+
+        try:
             response = await self._client.post(
                 delivery.target_url,
                 json=delivery.payload,
                 headers={
                     "X-Delivery-ID": str(delivery.id),
-                    "X-Event-Type": delivery.event_type,
+                    "X-Event-Type": event_type,
                 },
                 timeout=WEBHOOK_REQUEST_TIMEOUT_SECONDS,
             )
