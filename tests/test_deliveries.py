@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +16,8 @@ from webhook_delivery_service.models import (
 client = TestClient(app)
 
 
-def test_create_delivery_returns_created_delivery() -> None:
+@pytest.mark.parametrize("event_type", ["order.created", "!", "!" + " " * 253 + "~"])
+def test_create_delivery_returns_created_delivery(event_type: str) -> None:
     created_at = datetime(2026, 8, 15, 20, 0, tzinfo=UTC)
 
     session = MagicMock(spec=AsyncSession)
@@ -42,7 +44,7 @@ def test_create_delivery_returns_created_delivery() -> None:
             "/deliveries",
             json={
                 "target_url": "https://example.com/webhooks",
-                "event_type": "order.created",
+                "event_type": event_type,
                 "payload": {"order_id": 123},
             },
         )
@@ -68,7 +70,7 @@ def test_create_delivery_returns_created_delivery() -> None:
     assert response.json() == {
         "id": str(added_delivery.id),
         "target_url": "https://example.com/webhooks",
-        "event_type": "order.created",
+        "event_type": event_type,
         "payload": {"order_id": 123},
         "status": "pending",
         "attempt_count": 0,
@@ -81,3 +83,39 @@ def test_create_delivery_returns_created_delivery() -> None:
     session.flush.assert_awaited_once_with()
     session.commit.assert_awaited_once_with()
     session.refresh.assert_awaited_once_with(added_delivery)
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "",
+        "a" * 256,
+        " ",
+        " leading",
+        "trailing ",
+        "order.é",
+        "order\rcreated",
+        "order.created\n",
+        "order\r\ncreated",
+        "order\tcreated",
+        "order.\x7f",
+    ],
+)
+def test_invalid_event_type_is_rejected_before_persistence(
+    event_type: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = MagicMock(spec=AsyncSession)
+    monkeypatch.setitem(app.dependency_overrides, get_database_session, lambda: session)
+
+    response = client.post(
+        "/deliveries",
+        json={
+            "target_url": "https://example.com",
+            "event_type": event_type,
+            "payload": {},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "event_type"]
+    assert session.mock_calls == []

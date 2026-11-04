@@ -177,6 +177,12 @@ Checks whether the API can connect to PostgreSQL.
 POST /deliveries
 ```
 
+`event_type` must contain 1–255 printable ASCII characters. Internal spaces are
+preserved. Leading or trailing spaces, control characters (including CR and LF),
+and non-ASCII characters are invalid. An invalid value returns HTTP 422 before
+the service creates a delivery or outbox message. If a stored delivery has an
+invalid value, the worker records a permanent failure before making any HTTP request.
+
 Example request:
 
 ```json
