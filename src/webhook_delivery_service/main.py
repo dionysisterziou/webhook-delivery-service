@@ -14,6 +14,7 @@ from webhook_delivery_service.database import (
 from webhook_delivery_service.delivery_logs import delivery_log_output
 from webhook_delivery_service.models import WebhookDelivery
 from webhook_delivery_service.schemas import (
+    DeliveryMetrics,
     WebhookDeliveryCreate,
     WebhookDeliveryResponse,
 )
@@ -21,6 +22,7 @@ from webhook_delivery_service.services import (
     IdempotencyConflictError,
     create_idempotent_webhook_delivery,
     create_webhook_delivery,
+    get_delivery_metrics,
     get_webhook_delivery,
 )
 
@@ -52,6 +54,19 @@ async def readiness() -> dict[str, str]:
         )
 
     return {"status": "ok", "database": "ok"}
+
+
+@app.get("/metrics")
+async def metrics(
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> DeliveryMetrics:
+    try:
+        return await get_delivery_metrics(session)
+    except SQLAlchemyError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is unavailable",
+        ) from error
 
 
 @app.post(

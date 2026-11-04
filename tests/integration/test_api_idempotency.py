@@ -1,88 +1,19 @@
 import asyncio
 import os
-import sys
-from collections.abc import AsyncGenerator, Coroutine
-from contextlib import asynccontextmanager
-from typing import Any
 from uuid import uuid4
 
 import httpx
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.schema import CreateSchema, DropSchema
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from webhook_delivery_service.models import Base, OutboxMessage, WebhookDelivery
+from postgres_api import isolated_api, run_check
+from webhook_delivery_service.models import OutboxMessage, WebhookDelivery
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DATABASE_INTEGRATION_TESTS") != "1",
     reason="database integration tests are disabled",
 )
-
-
-@asynccontextmanager
-async def isolated_database(
-    session_class: type[AsyncSession] = AsyncSession,
-) -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
-    from webhook_delivery_service.config import Settings
-
-    schema_name = f"test_api_idempotency_{uuid4().hex}"
-    # Use a dedicated pool and schema; application tables are never modified.
-    engine = create_async_engine(
-        Settings().build_database_url(),
-        execution_options={"schema_translate_map": {None: schema_name}},
-        connect_args={"connect_timeout": 5},
-    )
-    schema_created = False
-
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(CreateSchema(schema_name))
-            await connection.run_sync(Base.metadata.create_all)
-        schema_created = True
-
-        yield async_sessionmaker(engine, class_=session_class, expire_on_commit=False)
-    finally:
-        try:
-            if schema_created:
-                async with engine.begin() as connection:
-                    await connection.execute(DropSchema(schema_name, cascade=True))
-        finally:
-            await engine.dispose()
-
-
-@asynccontextmanager
-async def isolated_api(
-    monkeypatch: pytest.MonkeyPatch,
-    session_class: type[AsyncSession] = AsyncSession,
-    backend_pids: list[int] | None = None,
-) -> AsyncGenerator[tuple[httpx.AsyncClient, async_sessionmaker[AsyncSession]]]:
-    from webhook_delivery_service.database import get_database_session
-    from webhook_delivery_service.main import app
-
-    async with isolated_database(session_class) as sessions:
-
-        async def override_database_session() -> AsyncGenerator[AsyncSession]:
-            async with sessions() as session:
-                if backend_pids is not None:
-                    pid = await session.scalar(text("SELECT pg_backend_pid()"))
-                    assert pid is not None
-                    backend_pids.append(pid)
-                yield session
-
-        # Run the real FastAPI route and service, using real PostgreSQL sessions.
-        # ASGITransport calls the app in-process; no Uvicorn server is needed.
-        with monkeypatch.context() as patch:
-            patch.setitem(
-                app.dependency_overrides,
-                get_database_session,
-                override_database_session,
-            )
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://testserver",
-            ) as client:
-                yield client, sessions
 
 
 def request_body() -> dict[str, object]:
@@ -127,11 +58,6 @@ async def check_repeated_request_creates_one_delivery(
         assert outbox_messages[0].delivery_id == deliveries[0].id
         assert outbox_messages[0].payload == {"delivery_id": str(deliveries[0].id)}
         assert outbox_messages[0].published_at is None
-
-
-def run_check(check: Coroutine[Any, Any, None]) -> None:
-    loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
-    asyncio.run(check, loop_factory=loop_factory)
 
 
 def test_repeated_post_with_same_key_creates_one_delivery(

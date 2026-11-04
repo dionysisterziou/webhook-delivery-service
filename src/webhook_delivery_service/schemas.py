@@ -39,3 +39,16 @@ class WebhookDeliveryResponse(BaseModel):
     delivered_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DeliveryStatusCounts(BaseModel):
+    pending: int
+    processing: int
+    retry_scheduled: int
+    succeeded: int
+    failed: int
+
+
+class DeliveryMetrics(BaseModel):
+    deliveries_by_status: DeliveryStatusCounts
+    unpublished_outbox_messages: int

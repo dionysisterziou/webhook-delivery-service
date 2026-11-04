@@ -171,6 +171,30 @@ GET /health/ready
 
 Checks whether the API can connect to PostgreSQL.
 
+### Delivery metrics
+
+`GET /metrics` counts each delivery once under its current stored status. A retry
+changes the status of the same delivery. The unpublished count measures outbox
+rows whose `published_at` is still `NULL`, including any created for retries.
+Both counts come from the same PostgreSQL snapshot.
+
+In this example, one delivery is awaiting retry and one outbox row is unpublished.
+
+```json
+{
+  "deliveries_by_status": {
+    "pending": 0,
+    "processing": 0,
+    "retry_scheduled": 1,
+    "succeeded": 0,
+    "failed": 0
+  },
+  "unpublished_outbox_messages": 1
+}
+```
+
+An unavailable database returns HTTP 503.
+
 ### Create Delivery
 
 ```http
@@ -853,7 +877,7 @@ The following capabilities are not implemented yet:
 
 - automated RabbitMQ-to-HTTP end-to-end testing,
 - webhook signing and authentication,
-- metrics and production observability,
+- historical metrics and production alerting,
 - production deployment configuration.
 
 The service provides at-least-once-oriented processing. It does not claim exactly-once delivery.
