@@ -1,10 +1,9 @@
 # Webhook Delivery Service
 
-A portfolio backend project for reliable asynchronous webhook delivery using FastAPI, PostgreSQL, RabbitMQ, and Python.
-
-The service accepts webhook delivery requests, stores them durably, publishes delivery messages through RabbitMQ, and sends the final HTTP requests through an asynchronous worker.
-
-> **Status:** Work in progress. The successful delivery path works end to end, while some production-oriented capabilities are still planned.
+This local portfolio MVP accepts webhook requests through FastAPI and stores each delivery
+with its outbox message in PostgreSQL. A dispatcher publishes the message to RabbitMQ,
+a worker sends the webhook over HTTP, and a scheduler queues retries for transient failures.
+Clients can look up a delivery's current status and attempt count through the API.
 
 ## Architecture
 
@@ -521,14 +520,15 @@ $delivery = Invoke-RestMethod `
 $delivery
 ```
 
-The response should contain:
+The POST response can show `pending` if the worker has not started the delivery.
 
 ```text
 status        : pending
 attempt_count : 0
 ```
 
-The creation response represents the initial delivery state. Processing runs asynchronously, so the webhook may already have been delivered by the time you inspect this response. Use the GET request in step 7 to check the current persisted state.
+The worker can finish before the POST response is returned. Use `GET /deliveries/{delivery_id}`
+in step 7 to read the current persisted state.
 
 ### 6. Observe the Delivery
 
@@ -701,7 +701,10 @@ Run the regular test suite:
 python -m pytest -q
 ```
 
-Most tests run without Docker because external dependencies are replaced with mocks.
+Pull requests targeting `main` run this command on Ubuntu with Python 3.14 and dummy
+settings. The PostgreSQL integration tests (`RUN_DATABASE_INTEGRATION_TESTS=1`),
+RabbitMQ integration tests (`RUN_RABBITMQ_INTEGRATION_TESTS=1`), and end-to-end retry
+test (`RUN_RETRY_E2E=1`) are opt-in and skipped by default.
 
 ### End-to-end retry test
 

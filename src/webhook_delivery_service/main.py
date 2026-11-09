@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 from typing import Annotated
 from uuid import UUID
 
@@ -26,13 +27,18 @@ from webhook_delivery_service.services import (
     get_webhook_delivery,
 )
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     with delivery_log_output():
         yield
 
 
-app = FastAPI(title="Webhook Delivery Service", lifespan=lifespan)
+app = FastAPI(
+    title="Webhook Delivery Service",
+    version=version("webhook-delivery-service"),
+    lifespan=lifespan,
+)
 
 
 @app.get("/health/live")
