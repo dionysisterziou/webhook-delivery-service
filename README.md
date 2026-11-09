@@ -703,6 +703,21 @@ python -m pytest -q
 
 Most tests run without Docker because external dependencies are replaced with mocks.
 
+### End-to-end retry test
+
+With the local Docker engine running and the `postgres:18.4` and
+`rabbitmq:4.3.4-management` images cached, run this from the repository root
+in the project's virtual environment. Each run migrates a fresh PostgreSQL
+database, starts its own RabbitMQ broker and loopback HTTP servers, and waits
+for the real scheduler to retry the receiver's 503. The test checks the 200
+response for the same delivery ID and two attempts in the API.
+
+```powershell
+$env:RUN_RETRY_E2E = "1"
+try { python -m pytest -q tests/e2e/test_retry_delivery.py }
+finally { Remove-Item Env:RUN_RETRY_E2E }
+```
+
 To check failure classification and its interaction with the consumer:
 
 ```powershell
@@ -875,7 +890,6 @@ addressing the error; automatic process supervision is not configured.
 
 The following capabilities are not implemented yet:
 
-- automated RabbitMQ-to-HTTP end-to-end testing,
 - webhook signing and authentication,
 - historical metrics and production alerting,
 - production deployment configuration.
